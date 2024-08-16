@@ -39,7 +39,11 @@
     'player:play': triggerPlay,
     'player:focus': focusPlayer,
     'preview:navigate': jumpToContext,
-    'preview:changeset': livePreview
+    'preview:changeset': livePreview,
+    'targetMode:toggle': toggleTargetMode,
+    'targetMode:focus': selectElementByPath,
+    'targetMode:translationHovered': handleHoveredTranslation,
+    'targetMode:translationHoverClear': handleClearHoverPath
   }
 
   if (Object.prototype.hasOwnProperty.call(params, 'wmode')) {
@@ -53,12 +57,18 @@
 
   window.vRestoreStateData = params.state
 
+  window.isTargetModeEnabled = false
+
   window.vInterfaceObject = {
     isRise: !!params.rise,
     OnSlideStarted: function (id) {
       sendParentMessage({
         type: 'slide:change',
         data: id
+      })
+      sendParentMessage({
+        type: 'targetMode:status',
+        data: getIsTargetModeAvailable()
       })
     },
     OnSlideTransition: function (id, duration) {
@@ -78,13 +88,15 @@
     OnEnterFullscreen: function () {
       sendParentMessage({
         type: 'fullscreen:enter',
-        windowName: window.name
+        windowName: window.name,
+        data: { windowName: window.name }
       })
     },
     OnExitFullscreen: function () {
       sendParentMessage({
         type: 'fullscreen:exit',
-        windowName: window.name
+        windowName: window.name,
+        data: { windowName: window.name }
       })
     },
     OnPlayerClicked: function () {
@@ -158,7 +170,16 @@
 
       return
     }
-    player.JumpToLocation(data.path)
+    player.JumpToLocation(data.path).then((data) => {
+      if (!data || !data?.target) {
+        return
+      }
+
+      sendParentMessage({
+        type: 'preview:navigate:success',
+        data: data.target?.replace(/_player./, '')
+      })
+    })
   }
 
   function triggerPlay() {
@@ -177,18 +198,101 @@
 
   function livePreview(data) {
     const player = window.GetPlayer()
-    if (typeof player.UpdateSegmentPartText !== 'function') {
-      log('player-interface.js: player.UpdateSegmentPartText is not a function! returning early')
+    if (typeof player.UpdateTextLibItem !== 'function') {
+      log('player-interface.js: player.UpdateTextLibItem is not a function! returning early')
 
       return
     }
     data.forEach(change => {
       if (change?.updatedXlifTarget) {
-        return player.UpdateSegmentPartText(change?.path[1], change?.updatedXlifTarget)
+        return sendParentMessage({
+          type: 'error',
+          data: {
+            errorJson: stringifyError({ message: 'Xlif target is not supported in this player version' }),
+            playerVersion: (window.globals && window.globals.playerVersion) || 'unknown'
+          }
+        })
       }
 
-      player.UpdateTextLibItem(change?.path, change?.updatedTarget)
+      player.UpdateTextLibItem(change?.path, change?.updatedTarget, change?.livePreviewData)
     })
+  }
+
+
+  function handleHoveredTargetPath(targetPath) {
+    log('player-interface.js: handleHoveredTargetPath', targetPath)
+    sendParentMessage({
+      type: 'targetMode:hovered',
+      data: targetPath
+    })
+
+    return targetPath
+  }
+
+  function handleSelectedTargetPath(targetPath) {
+    log('player-interface.js: handleSelectedTargetPath', targetPath)
+    sendParentMessage({
+      type: 'targetMode:selected',
+      data: targetPath
+    })
+    window.isTargetModeEnabled = false
+  }
+
+  function selectElementByPath({ path }) {
+    const player = window.GetPlayer()
+    if (typeof player.HighlightObject !== 'function') {
+      log('player-interface.js: player.HighlightObject is not a function! returning early')
+
+      return
+    }
+
+    if (!window.isTargetModeEnabled) {
+      return
+    }
+
+    player.HighlightObject(path, true)
+  }
+
+  function handleHoveredTranslation({ path }) {
+    const player = window.GetPlayer()
+    if (typeof player.HighlightObject !== 'function') {
+      log('player-interface.js: player.HighlightObject is not a function! returning early')
+
+      return
+    }
+
+    player.HighlightObject(path, false)
+  }
+
+  function handleClearHoverPath() {
+    const player = window.GetPlayer()
+    if (typeof player.HighlightObject !== 'function') {
+      log('player-interface.js: player.HighlightObject is not a function! returning early')
+
+      return
+    }
+    player.HighlightObject(null, false)
+  }
+
+  function toggleTargetMode({ isActive }) {
+    const player = window.GetPlayer()
+    if (!getIsTargetModeAvailable()) {
+      log('player-interface.js: player.EnterTargetMode is not a function! returning early')
+
+      return
+    }
+
+    if (window.isTargetModeEnabled) {
+      player.EnterTargetMode(false)
+      window.isTargetModeEnabled = false
+
+      return
+    }
+
+    if (isActive) {
+      player.EnterTargetMode(true, handleHoveredTargetPath).then(handleSelectedTargetPath)
+      window.isTargetModeEnabled = true
+    }
   }
 
   function handleMessage(e) {
@@ -258,4 +362,11 @@
 
     return jsonify(pseudoError)
   }
+
+  function getIsTargetModeAvailable() {
+    const player = window.GetPlayer()
+
+    return typeof player.EnterTargetMode === 'function'
+  }
+
 })()
